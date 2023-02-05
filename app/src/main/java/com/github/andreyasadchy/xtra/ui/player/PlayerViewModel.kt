@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
 import android.os.IBinder
+import android.os.Looper
 import android.support.v4.media.session.MediaSessionCompat
 import android.util.Log
 import androidx.lifecycle.LiveData
@@ -170,7 +171,7 @@ abstract class PlayerViewModel(context: Application) : BaseAndroidViewModel(cont
     }
 
     protected fun startBackgroundAudio(playlistUrl: String, channelName: String?, title: String?, imageUrl: String?, usePlayPause: Boolean, type: Int, videoId: Number?, showNotification: Boolean) {
-        releasePlayer()
+        val streamSwitchDelay = 3000
         val context = XtraApp.INSTANCE //TODO
         val intent = Intent(context, AudioPlayerService::class.java).apply {
             putExtra(AudioPlayerService.KEY_PLAYLIST_URL, playlistUrl)
@@ -178,23 +179,39 @@ abstract class PlayerViewModel(context: Application) : BaseAndroidViewModel(cont
             putExtra(AudioPlayerService.KEY_TITLE, title)
             putExtra(AudioPlayerService.KEY_IMAGE_URL, imageUrl)
             putExtra(AudioPlayerService.KEY_USE_PLAY_PAUSE, usePlayPause)
-            putExtra(AudioPlayerService.KEY_CURRENT_POSITION, player?.currentPosition)
+            putExtra(AudioPlayerService.KEY_CURRENT_POSITION, player?.currentPosition?.plus(streamSwitchDelay))
             putExtra(AudioPlayerService.KEY_TYPE, type)
             putExtra(AudioPlayerService.KEY_VIDEO_ID, videoId)
-            putExtra(AudioPlayerService.KEY_PLAYING, playing)
+            putExtra(AudioPlayerService.KEY_PLAYING, false)
         }
-        val connection = object : ServiceConnection {
 
+        val connection = object : ServiceConnection {
             override fun onServiceDisconnected(name: ComponentName) {
             }
 
             override fun onServiceConnected(name: ComponentName, service: IBinder) {
                 binder = service as AudioPlayerService.AudioBinder
-                player = service.player
-                _playerUpdated.postValue(true)
-                if (showNotification) {
-                    showAudioNotification()
-                }
+                val currentPos = player?.currentPosition!!
+                val bufferedPos = player?.bufferedPosition!!
+                val seamlessTransitionTime = if (currentPos.plus(streamSwitchDelay) < bufferedPos) currentPos.plus(streamSwitchDelay) else bufferedPos
+
+                service.player.seekTo(seamlessTransitionTime)
+                service.player.prepare()
+
+                player?.createMessage { _, _ ->
+                        run {
+                            service.player.play()
+                            player?.release()
+                            player = service.player
+                            _playerUpdated.postValue(true)
+                            if (showNotification) {
+                                showAudioNotification()
+                            }
+                        }
+                    }
+                    ?.setPosition(seamlessTransitionTime)
+                    ?.setLooper(Looper.getMainLooper())
+                    ?.send()
             }
         }
         AudioPlayerService.connection = connection
